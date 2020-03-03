@@ -1,0 +1,180 @@
+################################################################
+# Commands used in RAD-seq analyses ############################
+################################################################
+
+
+#### PROCESS_RADTAGS module from STACKS version 1.45 - Demultiplex reads into each sample
+###########################################################################################################################
+# input files: .sanfastq.gz for read1 (-1) and read2 (-2)
+/directory_path/process_radtags -1 input_file_path_read1 -2 input_file_path_read2 -o output_directory_path -b barcodes_file_path -q -r -e sbfI -E phred33 -i gzfastq
+
+
+### TRIMMOMATIC - trim reads at 3’ (crop to keep only 87 first bases - too many SNPs found after this position, in previous analysis)
+##########################################################################################################################
+# bash file:
+
+#!/bin/bash
+files="
+list_of_sample_names
+“
+for file in $files
+do
+java -jar /directory_path/trimmomatic-0.38.jar SE -threads 6 -phred33 /directory_path/${file}.1.fq.gz /directory_path/${file}.1.trim3.fq.gz CROP:87
+done
+
+### STACKS pipeline
+##########################################################################################################################
+# USTACKS - assembly
+# CSTACKS - create catalog
+# SSTACKS - match samples to catalog
+
+# bash file:
+
+#!/bin/bash
+
+files="
+list_of_sample_names
+“
+i=1
+for file in $files
+do
+/directory_path_program/ustacks -f /directory_path_samples/${file}.1.fq.gz -i $i -o /directory_path_assembled_files -M 2 -m 10 -N 4 -p 8 -t gzfastq -d 
+let "i+=1";
+done
+
+samp=""
+for file in $files
+do
+samp+="-s /directory_path_assembled_files/${file}.1 ";
+done
+
+/directory_path_program/cstacks -o /directory_path_assembled_files $samp -p 8 &>> /directory_path_assembled_files/Log_cstacks
+
+
+for file in $files
+do
+/directory_path_program/sstacks -b 0 -p 8 -c /directory_path_assembled_files/batch_0 -s /directory_path_assembled_files/${file}.1 -o /directory_path_assembled_files/ &>> /directory_path_assembled_files/Log_sstacks
+done
+
+/directory_path_program/populations -b 0 -P /directory_path_assembled_files/ --write_random_snp -p 9 -r 0.5 -t 8 --vcf
+
+
+### VCFTOOLS
+##########################################################################################################################
+## FILTER MISSING AND DEPTH AND MINOR COUNT
+## get new vcf excluding sites with less than 75% individuals with genotype (more than 25% missing) (--max-missing 0.75), with maximum mean depth (across individuals) of 200 x (--max-meanDP 200) and excluding homozygotic singletons or two heterozygotes (--mac 2)
+
+vcftools --vcf /directory_path_assembled_files/batch_0.vcf  --out /directory_vcftools_files_path/output_file  --max-missing 0.75 --max-meanDP 200  --mac 2 --recode
+
+
+## SUMMARIZE DATA
+# bash file:
+
+#!/bin/bash
+
+files="
+list_of_sample_names
+"
+
+for file in $files
+do
+vcftools --vcf /directory_vcftools_files_path/${file}.recode.vcf  --out /directory_vcftools_files_path/${file} --het
+vcftools --vcf /directory_vcftools_files_path/${file}.recode.vcf  --out /directory_vcftools_files_path/${file} --freq
+vcftools --vcf /directory_vcftools_files_path/${file}.recode.vcf  --out /directory_vcftools_files_path/${file} --counts
+vcftools --vcf /directory_vcftools_files_path/${file}.recode.vcf  --out /directory_vcftools_files_path/${file} --depth
+vcftools --vcf /directory_vcftools_files_path/${file}.recode.vcf  --out /directory_vcftools_files_path/${file} --site-depth
+vcftools --vcf /directory_vcftools_files_path/${file}.recode.vcf  --out /directory_vcftools_files_path/${file} --site-mean-depth
+vcftools --vcf /directory_vcftools_files_path/${file}.recode.vcf  --out /directory_vcftools_files_path/${file} --geno-depth
+vcftools --vcf /directory_vcftools_files_path/${file}.recode.vcf  --out /directory_vcftools_files_path/${file} --missing-indv
+vcftools --vcf /directory_vcftools_files_path/${file}.recode.vcf  --out /directory_vcftools_files_path/${file} --missing-site
+vcftools --vcf /directory_vcftools_files_path/${file}.recode.vcf  --out /directory_vcftools_files_path/${file} --site-pi
+
+done
+
+
+### STRUCTURE_THREADER
+##########################################################################################################################
+# convert vcf to structure in PGDSpider
+# create popfile.txt with names of populations with order we want, number of individuals in each pop and order in vcf
+# edit mainparams file (number of individuals, number of SNPs, burnin, number of replicates)
+
+~/.local/bin/structure_threader run -K 9 -R 10 -i /directory_path/input_file.structure -o /directory_structure_files_path/ -t 6 -st ~/.local/bin/structure --log /directory_structure_files_path/log_structure --pop /directory_structure_files_path/popfile.txt
+
+
+### CLUMPP 
+#########################################################
+/directory_path_program/CLUMPP /directory_clumpp_files_path/paramfile -i /directory_clumpp_files_path/input_file -o /directory_clumpp_files_path/output_file
+
+
+# BAYPASS #############################################
+#########################################################
+
+# 1. Convert .vcf to .geste (PGDSpider)
+# 2. Convert .geste to .baypass (geste2baypass.py in https://github.com/CoBiG2/RAD_Tools)
+
+python3 /directory_path/geste2baypass.py /directory_path/file.geste /directory_path/file.BAYPASS
+
+# 3. Prepare environmental file (as in bayenv)
+# 4. Prepare population file (list of population names, in the same order as in input)
+# 5. Run BayPass with R script (https://github.com/StuntsPT/pyRona)
+
+
+
+# SELESTIM #############################################
+#########################################################
+# 8 pops 
+# 1. Convert input file (GESTE2selestim.sh in https://github.com/StuntsPT)
+bash /home/sofia/PSP/RAD/convert_files/GESTE2SelEstim.sh /directory_path/file.geste /directory_path/file.SELESTIM
+
+# 2. Run Selestim
+/directory_path_program/selestim -file /directory_path/file.SELESTIM -outputs /directory_path/results_file_selestim -thin 20 -npilot 50 -burnin 50000 -length 10000000 -calibration
+
+# 3. Create plots 
+Rscript -e ‘source(“/directory_path_program/SelEstim.R”); plot.kld(file=“/directory_path/summary_delta.out”, calibration_file=“/directory_path/calibration/KLD_quantiles.out”, limit=0.01) > /directory_path/plot_kld
+
+
+
+# BAYESCAN #############################################
+#########################################################
+
+# 1. Run Bayescan
+
+directory_path_program/bayescan_2.1 /directory_path/file.geste -snp -threads 4 -od /directory_path/ -o file_name -n 500000 -thin 10 -nbp 20 -pilot 5000 -burn 50000 
+
+# 2. Create plots
+Rscript -e 'source("./directory_path_program/Rfunctions/plot_R.r"); plot_bayescan("./directory_path/file_fst.txt", FDR=$(bayescan_FDR))' > ./directory_path/plot_file
+
+
+######## BLAST Candidate SNPS (from Bayescan, BAyPASS and Selestim)
+##########################################################
+
+### 1. Create list of candidate SNPs names - use the order SNP codes present in .geste 
+Candidate_snps_8pops_mac2.csv 
+
+### 2. Get POS and ID from vcf and add column with SNP order (same as in .geste)
+
+### 3. Get file with list of candidate SNPs (and respective POS and ID)- snp_codes_list.txt
+
+### 4. GET SEQUENCES (catalog tags from Stacks) WHERE CANDIDATE SNPs ARE LOCATED; script removes 11 first bases (6 for SbfI recognition site and 5 for barcode)
+
+python2 /directory_path/filter_list_from_list_8pops_mac2.py /directory_path/Candidate_snps_8pops_mac2.csv /directory_path/SNP_names_fromvcf.csv /directory_path/snp_codes_list.txt /home/sofia/MEOCloud/0_Philaenus_RAD/0_NEW_ANALYSIS/Stacks/SbfI_all_M2m10_8pops/batch_0.catalog.tags.tsv > /home/sofia/MEOCloud/0_Philaenus_RAD/0_NEW_ANALYSIS/Candidate_snps/8pops_mac2/tags_candidate_snps_8pops_mac2.fas
+
+### 5. Format database (transform sequence file, e.g. fasta, into a blast database)
+makeblastdb -dbtype nucl -in /directory_path/genome_PSP/MPAX01.1.fsa_nt -input_type fasta -title draft_genomePSP_1.1 -out /directory_path/genome_PSP/draft_genomePSP_1.1 -logfile /directory_path/genome_PSP/log_draft_genomePSP
+
+### 6. blastn
+blastn -query /directory_path/tags_candidate_snps_8pops_mac2.fas -task megablast -db /directory_path/genome_PSP/draft_genomePSP_1.1 -out /directory_path/out_blastn_genomePSP1.1 -outfmt 6 -evalue 1E-30 -qcov_hsp_perc 100
+
+### 7. Get sequences from genome or transcriptome flanking candidate SNPs (preparing for blast in NCBI)
+# 7.1 Prepare file with a list of regions between -100 and +100 bp from start or end of the tag harboring the candidate SNP
+# Each line of the file has the path to the fasta file (e.g. /fasta_file_path/MPAX01.4.fsa_nt), the name of the sequence (MPAX011794718.1) and the positions to consider (e.g., 6 to 131): "/fasta_file_path/MPAX01.4.fsa_nt MPAX011794718.1:6-131"
+
+# 7.2 Get the sequences for those regions using SAMTOOLS
+cat /directory_path/list_regions.csv | while read line; do samtools faidx $line >> /directory_path/blast_results/sequences_flanking_candidateSNPs.fas; done
+
+
+
+
+
+
+
